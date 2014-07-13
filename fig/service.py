@@ -40,7 +40,7 @@ class ConfigError(ValueError):
 
 
 class Service(object):
-    def __init__(self, name, client=None, project='default', links=[], volumes_from=[], **options):
+    def __init__(self, name, client=None, project='default', links=None, volumes_from=None, **options):
         if not re.match('^%s+$' % VALID_NAME_CHARS, name):
             raise ConfigError('Invalid service name "%s" - only %s are allowed' % (name, VALID_NAME_CHARS))
         if not re.match('^%s+$' % VALID_NAME_CHARS, project):
@@ -177,8 +177,15 @@ class Service(object):
             return tuples
 
     def recreate_container(self, container, **override_options):
-        if container.is_running:
-            container.stop(timeout=1)
+        try:
+            container.stop()
+        except APIError as e:
+            if (e.response.status_code == 500
+                    and e.explanation
+                    and 'no such process' in str(e.explanation)):
+                pass
+            else:
+                raise
 
         intermediate_container = Container.create(
             self.client,
