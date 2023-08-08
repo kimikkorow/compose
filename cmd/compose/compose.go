@@ -26,6 +26,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/compose-spec/compose-go/dotenv"
+	buildx "github.com/docker/buildx/util/progress"
 	"github.com/docker/cli/cli/command"
 
 	"github.com/compose-spec/compose-go/cli"
@@ -43,8 +45,21 @@ import (
 	"github.com/docker/compose/v2/cmd/formatter"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
-	"github.com/docker/compose/v2/pkg/progress"
+	ui "github.com/docker/compose/v2/pkg/progress"
 	"github.com/docker/compose/v2/pkg/utils"
+)
+
+const (
+	// ComposeParallelLimit set the limit running concurrent operation on docker engine
+	ComposeParallelLimit = "COMPOSE_PARALLEL_LIMIT"
+	// ComposeProjectName define the project name to be used, instead of guessing from parent directory
+	ComposeProjectName = "COMPOSE_PROJECT_NAME"
+	// ComposeCompatibility try to mimic compose v1 as much as possible
+	ComposeCompatibility = "COMPOSE_COMPATIBILITY"
+	// ComposeRemoveOrphans remove “orphaned" containers, i.e. containers tagged for current project but not declared as service
+	ComposeRemoveOrphans = "COMPOSE_REMOVE_ORPHANS"
+	// ComposeIgnoreOrphans ignore "orphaned" containers
+	ComposeIgnoreOrphans = "COMPOSE_IGNORE_ORPHANS"
 )
 
 // Command defines a compose CLI command as a func with args
@@ -119,7 +134,7 @@ func (o *ProjectOptions) WithProject(fn ProjectFunc) func(cmd *cobra.Command, ar
 // WithServices creates a cobra run command from a ProjectFunc based on configured project options and selected services
 func (o *ProjectOptions) WithServices(fn ProjectServicesFunc) func(cmd *cobra.Command, args []string) error {
 	return Adapt(func(ctx context.Context, args []string) error {
-		project, err := o.ToProject(args, cli.WithResolvedPaths(true))
+		project, err := o.ToProject(args, cli.WithResolvedPaths(true), cli.WithDiscardEnvFile)
 		if err != nil {
 			return err
 		}
@@ -143,9 +158,9 @@ func (o *ProjectOptions) projectOrName(services ...string) (*types.Project, stri
 	name := o.ProjectName
 	var project *types.Project
 	if len(o.ConfigPaths) > 0 || o.ProjectName == "" {
-		p, err := o.ToProject(services)
+		p, err := o.ToProject(services, cli.WithDiscardEnvFile)
 		if err != nil {
-			envProjectName := os.Getenv("COMPOSE_PROJECT_NAME")
+			envProjectName := os.Getenv(ComposeProjectName)
 			if envProjectName != "" {
 				return nil, envProjectName, nil
 			}
@@ -162,7 +177,7 @@ func (o *ProjectOptions) toProjectName() (string, error) {
 		return o.ProjectName, nil
 	}
 
-	envProjectName := os.Getenv("COMPOSE_PROJECT_NAME")
+	envProjectName := os.Getenv(ComposeProjectName)
 	if envProjectName != "" {
 		return envProjectName, nil
 	}
@@ -180,13 +195,22 @@ func (o *ProjectOptions) ToProject(services []string, po ...cli.ProjectOptionsFn
 		return nil, compose.WrapComposeError(err)
 	}
 
-	if o.Compatibility || utils.StringToBool(options.Environment["COMPOSE_COMPATIBILITY"]) {
+	if o.Compatibility || utils.StringToBool(options.Environment[ComposeCompatibility]) {
 		api.Separator = "_"
 	}
 
 	project, err := cli.ProjectFromOptions(options)
 	if err != nil {
 		return nil, compose.WrapComposeError(err)
+	}
+
+	if project.Name == "" {
+		return nil, errors.New("project name can't be empty. Use `--project-name` to set a valid name")
+	}
+
+	err = project.EnableServices(services...)
+	if err != nil {
+		return nil, err
 	}
 
 	for i, s := range project.Services {
@@ -204,20 +228,6 @@ func (o *ProjectOptions) ToProject(services []string, po ...cli.ProjectOptionsFn
 		project.Services[i] = s
 	}
 
-	if profiles, ok := options.Environment["COMPOSE_PROFILES"]; ok && len(o.Profiles) == 0 {
-		o.Profiles = append(o.Profiles, strings.Split(profiles, ",")...)
-	}
-
-	if len(services) > 0 {
-		s, err := project.GetServices(services...)
-		if err != nil {
-			return nil, err
-		}
-		o.Profiles = append(o.Profiles, s.GetProfiles()...)
-	}
-
-	project.ApplyProfiles(o.Profiles)
-
 	project.WithoutUnnecessaryResources()
 
 	err = project.ForServices(services)
@@ -233,6 +243,7 @@ func (o *ProjectOptions) toProjectOptions(po ...cli.ProjectOptionsFn) (*cli.Proj
 			cli.WithDotEnv,
 			cli.WithConfigFileEnv,
 			cli.WithDefaultConfigPath,
+			cli.WithProfiles(o.Profiles),
 			cli.WithName(o.ProjectName))...)
 }
 
@@ -264,9 +275,11 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 		version  bool
 		parallel int
 		dryRun   bool
+		progress string
 	)
 	c := &cobra.Command{
 		Short:            "Docker Compose",
+		Long:             "Define and run multi-container applications with Docker.",
 		Use:              PluginName,
 		TraverseChildren: true,
 		// By default (no Run/RunE in parent c) for typos in subcommands, cobra displays the help of parent c but exit(0) !
@@ -275,7 +288,7 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 				return cmd.Help()
 			}
 			if version {
-				return versionCommand().Execute()
+				return versionCommand(streams).Execute()
 			}
 			_ = cmd.Help()
 			return dockercli.StatusError{
@@ -308,13 +321,44 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 			if verbose {
 				logrus.SetLevel(logrus.TraceLevel)
 			}
+
+			if v, ok := os.LookupEnv("COMPOSE_ANSI"); ok && !cmd.Flags().Changed("ansi") {
+				ansi = v
+			}
+
 			formatter.SetANSIMode(streams, ansi)
+
+			if noColor, ok := os.LookupEnv("NO_COLOR"); ok && noColor != "" {
+				ui.NoColor()
+				formatter.SetANSIMode(streams, formatter.Never)
+			}
+
 			switch ansi {
 			case "never":
-				progress.Mode = progress.ModePlain
-			case "tty":
-				progress.Mode = progress.ModeTTY
+				ui.Mode = ui.ModePlain
+			case "always":
+				ui.Mode = ui.ModeTTY
 			}
+
+			switch progress {
+			case ui.ModeAuto:
+				ui.Mode = ui.ModeAuto
+			case ui.ModeTTY:
+				if ansi == "never" {
+					return fmt.Errorf("can't use --progress tty while ANSI support is disabled")
+				}
+				ui.Mode = ui.ModeTTY
+			case ui.ModePlain:
+				if ansi == "always" {
+					return fmt.Errorf("can't use --progress plain while ANSI support is forced")
+				}
+				ui.Mode = ui.ModePlain
+			case ui.ModeQuiet, "none":
+				ui.Mode = ui.ModeQuiet
+			default:
+				return fmt.Errorf("unsupported --progress value %q", progress)
+			}
+
 			if opts.WorkDir != "" {
 				if opts.ProjectDir != "" {
 					return errors.New(`cannot specify DEPRECATED "--workdir" and "--project-directory". Please use only "--project-directory" instead`)
@@ -331,10 +375,22 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 					opts.EnvFiles[i] = file
 				}
 			}
-			if v, ok := os.LookupEnv("COMPOSE_PARALLEL_LIMIT"); ok && !cmd.Flags().Changed("parallel") {
+
+			composeCmd := cmd
+			for {
+				if composeCmd.Name() == PluginName {
+					break
+				}
+				if !composeCmd.HasParent() {
+					return fmt.Errorf("error parsing command line, expected %q", PluginName)
+				}
+				composeCmd = composeCmd.Parent()
+			}
+
+			if v, ok := os.LookupEnv(ComposeParallelLimit); ok && !composeCmd.Flags().Changed("parallel") {
 				i, err := strconv.Atoi(v)
 				if err != nil {
-					return fmt.Errorf("COMPOSE_PARALLEL_LIMIT must be an integer (found: %q)", v)
+					return fmt.Errorf("%s must be an integer (found: %q)", ComposeParallelLimit, v)
 				}
 				parallel = i
 			}
@@ -359,7 +415,7 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 		psCommand(&opts, streams, backend),
 		listCommand(streams, backend),
 		logsCommand(&opts, streams, backend),
-		convertCommand(&opts, streams, backend),
+		configCommand(&opts, streams, backend),
 		killCommand(&opts, backend),
 		runCommand(&opts, streams, backend),
 		removeCommand(&opts, backend),
@@ -370,12 +426,13 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 		eventsCommand(&opts, streams, backend),
 		portCommand(&opts, streams, backend),
 		imagesCommand(&opts, streams, backend),
-		versionCommand(),
-		buildCommand(&opts, streams, backend),
+		versionCommand(streams),
+		buildCommand(&opts, &progress, backend),
 		pushCommand(&opts, backend),
 		pullCommand(&opts, backend),
 		createCommand(&opts, backend),
 		copyCommand(&opts, backend),
+		waitCommand(&opts, backend),
 		alphaCommand(&opts, backend),
 	)
 
@@ -392,16 +449,17 @@ func RootCommand(streams command.Cli, backend api.Service) *cobra.Command { //no
 		},
 	)
 
+	c.Flags().StringVar(&progress, "progress", buildx.PrinterModeAuto, fmt.Sprintf(`Set type of progress output (%s)`, strings.Join(printerModes, ", ")))
+
 	c.Flags().StringVar(&ansi, "ansi", "auto", `Control when to print ANSI control characters ("never"|"always"|"auto")`)
 	c.Flags().IntVar(&parallel, "parallel", -1, `Control max parallelism, -1 for unlimited`)
 	c.Flags().BoolVarP(&version, "version", "v", false, "Show the Docker Compose version information")
+	c.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Execute command in dry run mode")
 	c.Flags().MarkHidden("version") //nolint:errcheck
 	c.Flags().BoolVar(&noAnsi, "no-ansi", false, `Do not print ANSI control characters (DEPRECATED)`)
 	c.Flags().MarkHidden("no-ansi") //nolint:errcheck
 	c.Flags().BoolVar(&verbose, "verbose", false, "Show more output")
 	c.Flags().MarkHidden("verbose") //nolint:errcheck
-	c.Flags().BoolVar(&dryRun, "dry-run", false, "Execute command in dry run mode")
-	c.Flags().MarkHidden("dry-run") //nolint:errcheck
 	return c
 }
 
@@ -415,7 +473,7 @@ func setEnvWithDotEnv(prjOpts *ProjectOptions) error {
 		return err
 	}
 
-	envFromFile, err := cli.GetEnvFromFile(composegoutils.GetAsEqualsMap(os.Environ()), workingDir, options.EnvFiles)
+	envFromFile, err := dotenv.GetEnvFromFile(composegoutils.GetAsEqualsMap(os.Environ()), workingDir, options.EnvFiles)
 	if err != nil {
 		return err
 	}
@@ -427,4 +485,11 @@ func setEnvWithDotEnv(prjOpts *ProjectOptions) error {
 		}
 	}
 	return nil
+}
+
+var printerModes = []string{
+	ui.ModeAuto,
+	ui.ModeTTY,
+	ui.ModePlain,
+	ui.ModeQuiet,
 }

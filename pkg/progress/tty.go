@@ -43,6 +43,7 @@ type ttyWriter struct {
 	tailEvents      []string
 	dryRun          bool
 	skipChildEvents bool
+	progressTitle   string
 }
 
 func (w *ttyWriter) Start(ctx context.Context) error {
@@ -72,6 +73,10 @@ func (w *ttyWriter) Stop() {
 func (w *ttyWriter) Event(e Event) {
 	w.mtx.Lock()
 	defer w.mtx.Unlock()
+	w.event(e)
+}
+
+func (w *ttyWriter) event(e Event) {
 	if !utils.StringContains(w.eventIDs, e.ID) {
 		w.eventIDs = append(w.eventIDs, e.ID)
 	}
@@ -79,8 +84,13 @@ func (w *ttyWriter) Event(e Event) {
 		last := w.events[e.ID]
 		switch e.Status {
 		case Done, Error, Warning:
-			if last.Status != e.Status {
+			if last.endTime.IsZero() {
 				last.stop()
+			}
+		case Working:
+			if !last.endTime.IsZero() {
+				// already done, don't overwrite
+				return
 			}
 		}
 		last.Status = e.Status
@@ -105,8 +115,10 @@ func (w *ttyWriter) Event(e Event) {
 }
 
 func (w *ttyWriter) Events(events []Event) {
+	w.mtx.Lock()
+	defer w.mtx.Unlock()
 	for _, e := range events {
-		w.Event(e)
+		w.event(e)
 	}
 }
 
@@ -149,9 +161,9 @@ func (w *ttyWriter) print() { //nolint:gocyclo
 	fmt.Fprint(w.out, aec.Hide)
 	defer fmt.Fprint(w.out, aec.Show)
 
-	firstLine := fmt.Sprintf("[+] Running %d/%d", numDone(w.events), w.numLines)
+	firstLine := fmt.Sprintf("[+] %s %d/%d", w.progressTitle, numDone(w.events), w.numLines)
 	if w.numLines != 0 && numDone(w.events) == w.numLines {
-		firstLine = aec.Apply(firstLine, aec.BlueF)
+		firstLine = DoneColor(firstLine)
 	}
 	fmt.Fprintln(w.out, firstLine)
 
@@ -210,7 +222,7 @@ func (w *ttyWriter) lineText(event Event, pad string, terminalWidth, statusPaddi
 	}
 	prefix := ""
 	if dryRun {
-		prefix = aec.Apply(api.DRYRUN_PREFIX, aec.CyanF)
+		prefix = PrefixColor(api.DRYRUN_PREFIX)
 	}
 
 	elapsed := endTime.Sub(event.startTime).Seconds()
@@ -234,8 +246,8 @@ func (w *ttyWriter) lineText(event Event, pad string, terminalWidth, statusPaddi
 	if len(completion) > 0 {
 		txt = fmt.Sprintf("%s %s [%s] %7s/%-7s %s",
 			event.ID,
-			aec.Apply(fmt.Sprintf("%d layers", len(completion)), aec.YellowF),
-			aec.Apply(strings.Join(completion, ""), aec.GreenF, aec.Bold),
+			CountColor(fmt.Sprintf("%d layers", len(completion))),
+			SuccessColor(strings.Join(completion, "")),
 			units.HumanSize(float64(current)), units.HumanSize(float64(total)),
 			event.Text)
 	} else {
@@ -260,10 +272,10 @@ func (w *ttyWriter) lineText(event Event, pad string, terminalWidth, statusPaddi
 		prefix,
 		txt,
 		strings.Repeat(" ", padding),
-		aec.Apply(status, event.Status.color()),
+		event.Status.colorFn()(status),
 	)
 	timer := fmt.Sprintf("%.1fs ", elapsed)
-	o := align(text, aec.Apply(timer, aec.BlueF), terminalWidth)
+	o := align(text, TimerColor(timer), terminalWidth)
 
 	return o
 }
@@ -281,7 +293,11 @@ func numDone(events map[string]Event) int {
 func align(l, r string, w int) string {
 	ll := lenAnsi(l)
 	lr := lenAnsi(r)
-	pad := strings.Repeat(" ", w-ll-lr)
+	pad := ""
+	count := w - ll - lr
+	if count > 0 {
+		pad = strings.Repeat(" ", count)
+	}
 	return fmt.Sprintf("%s%s%s\n", l, pad, r)
 }
 

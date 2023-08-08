@@ -33,19 +33,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	compose "github.com/docker/compose/v2/pkg/api"
-	"github.com/docker/compose/v2/pkg/mocks"
 )
 
 func TestComposeService_Logs_Demux(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 
-	api := mocks.NewMockAPIClient(mockCtrl)
-	cli := mocks.NewMockCli(mockCtrl)
+	api, cli := prepareMocks(mockCtrl)
 	tested := composeService{
 		dockerCli: cli,
 	}
-	cli.EXPECT().Client().Return(api).AnyTimes()
 
 	name := strings.ToLower(testProject)
 
@@ -74,9 +71,9 @@ func TestComposeService_Logs_Demux(t *testing.T) {
 	c1Stdout := stdcopy.NewStdWriter(c1Writer, stdcopy.Stdout)
 	c1Stderr := stdcopy.NewStdWriter(c1Writer, stdcopy.Stderr)
 	go func() {
-		_, err := c1Stdout.Write([]byte("hello stdout\n"))
+		_, err := c1Stdout.Write([]byte("hello\n stdout"))
 		assert.NoError(t, err, "Writing to fake stdout")
-		_, err = c1Stderr.Write([]byte("hello stderr\n"))
+		_, err = c1Stderr.Write([]byte("hello\n stderr"))
 		assert.NoError(t, err, "Writing to fake stderr")
 		_ = c1Writer.Close()
 	}()
@@ -97,7 +94,7 @@ func TestComposeService_Logs_Demux(t *testing.T) {
 
 	require.Equal(
 		t,
-		[]string{"hello stdout", "hello stderr"},
+		[]string{"hello", " stdout", "hello", " stderr"},
 		consumer.LogsForContainer("c"),
 	)
 }
@@ -113,12 +110,10 @@ func TestComposeService_Logs_ServiceFiltering(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 
-	api := mocks.NewMockAPIClient(mockCtrl)
-	cli := mocks.NewMockCli(mockCtrl)
+	api, cli := prepareMocks(mockCtrl)
 	tested := composeService{
 		dockerCli: cli,
 	}
-	cli.EXPECT().Client().Return(api).AnyTimes()
 
 	name := strings.ToLower(testProject)
 

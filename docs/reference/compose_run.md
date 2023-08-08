@@ -8,7 +8,10 @@ Run a one-off command on a service.
 | Name                  | Type          | Default | Description                                                                       |
 |:----------------------|:--------------|:--------|:----------------------------------------------------------------------------------|
 | `--build`             |               |         | Build image before starting container.                                            |
+| `--cap-add`           | `list`        |         | Add Linux capabilities                                                            |
+| `--cap-drop`          | `list`        |         | Drop Linux capabilities                                                           |
 | `-d`, `--detach`      |               |         | Run container in background and print container ID                                |
+| `--dry-run`           |               |         | Execute command in dry run mode                                                   |
 | `--entrypoint`        | `string`      |         | Override the entrypoint of the image                                              |
 | `-e`, `--env`         | `stringArray` |         | Set environment variables                                                         |
 | `-i`, `--interactive` |               |         | Keep STDIN open even if not attached.                                             |
@@ -33,7 +36,7 @@ Run a one-off command on a service.
 
 Runs a one-time command against a service.
 
-the following command starts the `web` service and runs `bash` as its command:
+The following command starts the `web` service and runs `bash` as its command:
 
 ```console
 $ docker compose run web bash

@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/compose-spec/compose-go/types"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/progress"
 	"github.com/docker/compose/v2/pkg/utils"
@@ -28,9 +29,9 @@ import (
 )
 
 func (s *composeService) Restart(ctx context.Context, projectName string, options api.RestartOptions) error {
-	return progress.Run(ctx, func(ctx context.Context) error {
+	return progress.RunWithTitle(ctx, func(ctx context.Context) error {
 		return s.restart(ctx, strings.ToLower(projectName), options)
-	})
+	}, s.stdinfo(), "Restarting")
 }
 
 func (s *composeService) restart(ctx context.Context, projectName string, options api.RestartOptions) error {
@@ -47,7 +48,7 @@ func (s *composeService) restart(ctx context.Context, projectName string, option
 		}
 	}
 
-	// ignore depends_on relations which are not impacted by restarting service
+	// ignore depends_on relations which are not impacted by restarting service or not required
 	for i, service := range project.Services {
 		for name, r := range service.DependsOn {
 			if !r.Restart {
@@ -57,8 +58,8 @@ func (s *composeService) restart(ctx context.Context, projectName string, option
 		project.Services[i] = service
 	}
 
-	if len(options.Services) == 0 {
-		err = project.ForServices(options.Services)
+	if len(options.Services) != 0 {
+		err = project.ForServices(options.Services, types.IncludeDependents)
 		if err != nil {
 			return err
 		}

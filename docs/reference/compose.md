@@ -1,13 +1,12 @@
 # docker compose
 
 <!---MARKER_GEN_START-->
-Docker Compose
+Define and run multi-container applications with Docker.
 
 ### Subcommands
 
 | Name                            | Description                                                             |
 |:--------------------------------|:------------------------------------------------------------------------|
-| [`alpha`](compose_alpha.md)     | Experimental commands                                                   |
 | [`build`](compose_build.md)     | Build or rebuild services                                               |
 | [`config`](compose_config.md)   | Parse, resolve and render compose file in canonical format              |
 | [`cp`](compose_cp.md)           | Copy files/folders between a service container and the local filesystem |
@@ -33,6 +32,7 @@ Docker Compose
 | [`unpause`](compose_unpause.md) | Unpause services                                                        |
 | [`up`](compose_up.md)           | Create and start containers                                             |
 | [`version`](compose_version.md) | Show the Docker Compose version information                             |
+| [`wait`](compose_wait.md)       | Block until the first service container stops                           |
 
 
 ### Options
@@ -41,10 +41,12 @@ Docker Compose
 |:-----------------------|:--------------|:--------|:----------------------------------------------------------------------------------------------------|
 | `--ansi`               | `string`      | `auto`  | Control when to print ANSI control characters ("never"\|"always"\|"auto")                           |
 | `--compatibility`      |               |         | Run compose in backward compatibility mode                                                          |
+| `--dry-run`            |               |         | Execute command in dry run mode                                                                     |
 | `--env-file`           | `stringArray` |         | Specify an alternate environment file.                                                              |
 | `-f`, `--file`         | `stringArray` |         | Compose configuration files                                                                         |
 | `--parallel`           | `int`         | `-1`    | Control max parallelism, -1 for unlimited                                                           |
 | `--profile`            | `stringArray` |         | Specify a profile to enable                                                                         |
+| `--progress`           | `string`      | `auto`  | Set type of progress output (auto, tty, plain, quiet)                                               |
 | `--project-directory`  | `string`      |         | Specify an alternate working directory<br>(default: the path of the, first specified, Compose file) |
 | `-p`, `--project-name` | `string`      |         | Project name                                                                                        |
 
@@ -115,12 +117,19 @@ $ docker compose -f ~/sandbox/rails/compose.yaml pull db
 
 ### Use `-p` to specify a project name
 
-Each configuration has a project name. If you supply a `-p` flag, you can specify a project name. If you don’t
-specify the flag, Compose uses the current directory name.
-Project name can also be set by `COMPOSE_PROJECT_NAME` environment variable.
-
-Many Compose subcommands can be run without a Compose file by passing
-the project name.
+Each configuration has a project name. Compose sets the project name using
+the following mechanisms, in order of precedence:
+- The `-p` command line flag
+- The `COMPOSE_PROJECT_NAME` environment variable
+- The top level `name:` variable from the config file (or the last `name:`
+from a series of config files specified using `-f`)
+- The `basename` of the project directory containing the config file (or
+containing the first config file specified using `-f`)
+- The `basename` of the current directory if no config file is specified
+Project names must contain only lowercase letters, decimal digits, dashes,
+and underscores, and must begin with a lowercase letter or decimal digit. If
+the `basename` of the project directory or current directory violates this
+constraint, you must use one of the other mechanisms.
 
 ```console
 $ docker compose -p my_project ps -a
@@ -162,3 +171,28 @@ If flags are explicitly set on the command line, the associated environment vari
 
 Setting the `COMPOSE_IGNORE_ORPHANS` environment variable to `true` will stop docker compose from detecting orphaned
 containers for the project.
+
+### Use Dry Run mode to test your command
+
+Use `--dry-run` flag to test a command without changing your application stack state.
+Dry Run mode shows you all the steps Compose applies when executing a command, for example:
+```console
+$ docker compose --dry-run up --build -d
+[+] Pulling 1/1
+ ✔ DRY-RUN MODE -  db Pulled                                                                                                                                                                                                               0.9s
+[+] Running 10/8
+ ✔ DRY-RUN MODE -    build service backend                                                                                                                                                                                                 0.0s
+ ✔ DRY-RUN MODE -  ==> ==> writing image dryRun-754a08ddf8bcb1cf22f310f09206dd783d42f7dd                                                                                                                                                   0.0s
+ ✔ DRY-RUN MODE -  ==> ==> naming to nginx-golang-mysql-backend                                                                                                                                                                            0.0s
+ ✔ DRY-RUN MODE -  Network nginx-golang-mysql_default                                    Created                                                                                                                                           0.0s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-db-1                                     Created                                                                                                                                           0.0s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-backend-1                                Created                                                                                                                                           0.0s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-proxy-1                                  Created                                                                                                                                           0.0s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-db-1                                     Healthy                                                                                                                                           0.5s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-backend-1                                Started                                                                                                                                           0.0s
+ ✔ DRY-RUN MODE -  Container nginx-golang-mysql-proxy-1                                  Started                                     Started
+```
+From the example above, you can see that the first step is to pull the image defined by `db` service, then build the `backend` service.  
+Next, the containers are created. The `db` service is started, and the `backend` and `proxy` wait until the `db` service is healthy before starting.
+
+Dry Run mode works with almost all commands. You cannot use Dry Run mode with a command that doesn't change the state of a Compose stack such as `ps`, `ls`, `logs` for example.  

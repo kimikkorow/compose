@@ -40,6 +40,7 @@ type configOptions struct {
 	resolveImageDigests bool
 	noInterpolate       bool
 	noNormalize         bool
+	noResolvePath       bool
 	services            bool
 	volumes             bool
 	profiles            bool
@@ -51,13 +52,14 @@ type configOptions struct {
 func (o *configOptions) ToProject(services []string) (*types.Project, error) {
 	return o.ProjectOptions.ToProject(services,
 		cli.WithInterpolation(!o.noInterpolate),
-		cli.WithResolvedPaths(true),
+		cli.WithResolvedPaths(!o.noResolvePath),
 		cli.WithNormalization(!o.noNormalize),
 		cli.WithConsistency(!o.noConsistency),
+		cli.WithProfiles(o.Profiles),
 		cli.WithDiscardEnvFile)
 }
 
-func convertCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cobra.Command {
+func configCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cobra.Command {
 	opts := configOptions{
 		ProjectOptions: p,
 	}
@@ -105,6 +107,7 @@ func convertCommand(p *ProjectOptions, streams api.Streams, backend api.Service)
 	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "Only validate the configuration, don't print anything.")
 	flags.BoolVar(&opts.noInterpolate, "no-interpolate", false, "Don't interpolate environment variables.")
 	flags.BoolVar(&opts.noNormalize, "no-normalize", false, "Don't normalize compose model.")
+	flags.BoolVar(&opts.noResolvePath, "no-path-resolution", false, "Don't resolve file paths.")
 	flags.BoolVar(&opts.noConsistency, "no-consistency", false, "Don't check model consistency - warning: may produce invalid Compose output")
 
 	flags.BoolVar(&opts.services, "services", false, "Print the service names, one per line.")
@@ -181,7 +184,7 @@ func runHash(streams api.Streams, opts configOptions) error {
 	}
 
 	if len(services) > 0 {
-		err = withSelectedServicesOnly(project, services)
+		err = project.ForServices(services, types.IgnoreDependencies)
 		if err != nil {
 			return err
 		}
@@ -230,11 +233,7 @@ func runConfigImages(streams api.Streams, opts configOptions, services []string)
 		return err
 	}
 	for _, s := range project.Services {
-		if s.Image != "" {
-			fmt.Fprintln(streams.Out(), s.Image)
-		} else {
-			fmt.Fprintf(streams.Out(), "%s%s%s\n", project.Name, api.Separator, s.Name)
-		}
+		fmt.Fprintln(streams.Out(), api.GetImageNameOrDefault(s, project.Name))
 	}
 	return nil
 }

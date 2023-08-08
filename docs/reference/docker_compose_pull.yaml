@@ -68,6 +68,17 @@ options:
       experimentalcli: false
       kubernetes: false
       swarm: false
+inherited_options:
+    - option: dry-run
+      value_type: bool
+      default_value: "false"
+      description: Execute command in dry run mode
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
 examples: |-
     suppose you have this `compose.yaml`:
 
@@ -113,6 +124,7 @@ examples: |-
     `docker compose pull` will try to pull image for services with a build section. If pull fails, it will let
     user know this service image MUST be built. You can skip this by setting `--ignore-buildable` flag
 deprecated: false
+hidden: false
 experimental: false
 experimentalcli: false
 kubernetes: false

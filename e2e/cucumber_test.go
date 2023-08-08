@@ -19,12 +19,14 @@ package cucumber
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/compose-spec/compose-go/loader"
 	"github.com/cucumber/godog"
 	"github.com/cucumber/godog/colors"
 	"github.com/mattn/go-shellwords"
@@ -58,7 +60,7 @@ func TestCucumber(t *testing.T) {
 
 func setup(s *godog.ScenarioContext) {
 	t := s.TestingT()
-	projectName := strings.Split(t.Name(), "/")[1]
+	projectName := loader.NormalizeProjectName(strings.Split(t.Name(), "/")[1])
 	cli := e2e.NewCLI(t, e2e.WithEnv(
 		fmt.Sprintf("COMPOSE_PROJECT_NAME=%s", projectName),
 	))
@@ -86,6 +88,7 @@ func setup(s *godog.ScenarioContext) {
 	s.Step(`output contains "(.*)"$`, th.outputContains(true))
 	s.Step(`output does not contain "(.*)"$`, th.outputContains(false))
 	s.Step(`exit code is (\d+)$`, th.exitCodeIs)
+	s.Step(`a process listening on port (\d+)$`, th.listenerOnPort)
 }
 
 type testHelper struct {
@@ -171,5 +174,18 @@ func (th *testHelper) setDockerfile(dockerfileString string) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func (th *testHelper) listenerOnPort(port int) error {
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+
+	th.T.Cleanup(func() {
+		_ = l.Close()
+	})
+
 	return nil
 }

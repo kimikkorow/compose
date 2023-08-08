@@ -21,9 +21,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/docker/compose/v2/cmd/formatter"
-
 	"github.com/compose-spec/compose-go/types"
+	"github.com/docker/compose/v2/cmd/formatter"
 	"github.com/spf13/cobra"
 
 	"github.com/docker/compose/v2/pkg/api"
@@ -54,7 +53,7 @@ type upOptions struct {
 
 func (opts upOptions) apply(project *types.Project, services []string) error {
 	if opts.noDeps {
-		err := withSelectedServicesOnly(project, services)
+		err := project.ForServices(services, types.IgnoreDependencies)
 		if err != nil {
 			return err
 		}
@@ -78,13 +77,13 @@ func upCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cob
 		Short: "Create and start containers",
 		PreRunE: AdaptCmd(func(ctx context.Context, cmd *cobra.Command, args []string) error {
 			create.pullChanged = cmd.Flags().Changed("pull")
-			create.timeChanged = cmd.Flags().Changed("waitTimeout")
+			create.timeChanged = cmd.Flags().Changed("timeout")
 			return validateFlags(&up, &create)
 		}),
 		RunE: p.WithServices(func(ctx context.Context, project *types.Project, services []string) error {
-			create.ignoreOrphans = utils.StringToBool(project.Environment["COMPOSE_IGNORE_ORPHANS"])
+			create.ignoreOrphans = utils.StringToBool(project.Environment[ComposeIgnoreOrphans])
 			if create.ignoreOrphans && create.removeOrphans {
-				return fmt.Errorf("COMPOSE_IGNORE_ORPHANS and --remove-orphans cannot be combined")
+				return fmt.Errorf("%s and --remove-orphans cannot be combined", ComposeIgnoreOrphans)
 			}
 			return runUp(ctx, streams, backend, create, up, project, services)
 		}),
@@ -104,7 +103,7 @@ func upCommand(p *ProjectOptions, streams api.Streams, backend api.Service) *cob
 	flags.BoolVar(&up.noStart, "no-start", false, "Don't start the services after creating them.")
 	flags.BoolVar(&up.cascadeStop, "abort-on-container-exit", false, "Stops all containers if any container was stopped. Incompatible with -d")
 	flags.StringVar(&up.exitCodeFrom, "exit-code-from", "", "Return the exit code of the selected service container. Implies --abort-on-container-exit")
-	flags.IntVarP(&create.timeout, "waitTimeout", "t", 10, "Use this waitTimeout in seconds for container shutdown when attached or when containers are already running.")
+	flags.IntVarP(&create.timeout, "timeout", "t", 0, "Use this timeout in seconds for container shutdown when attached or when containers are already running.")
 	flags.BoolVar(&up.timestamp, "timestamps", false, "Show timestamps.")
 	flags.BoolVar(&up.noDeps, "no-deps", false, "Don't start linked services.")
 	flags.BoolVar(&create.recreateDeps, "always-recreate-deps", false, "Recreate dependent containers. Incompatible with --no-recreate.")
@@ -164,17 +163,31 @@ func runUp(ctx context.Context, streams api.Streams, backend api.Service, create
 		consumer = formatter.NewLogConsumer(ctx, streams.Out(), streams.Err(), !upOptions.noColor, !upOptions.noPrefix, upOptions.timestamp)
 	}
 
-	attachTo := services
+	attachTo := utils.Set[string]{}
 	if len(upOptions.attach) > 0 {
-		attachTo = upOptions.attach
+		attachTo.AddAll(upOptions.attach...)
 	}
 	if upOptions.attachDependencies {
-		attachTo = project.ServiceNames()
+		if err := project.WithServices(attachTo.Elements(), func(s types.ServiceConfig) error {
+			if s.Attach == nil || *s.Attach {
+				attachTo.Add(s.Name)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 	if len(attachTo) == 0 {
-		attachTo = project.ServiceNames()
+		if err := project.WithServices(services, func(s types.ServiceConfig) error {
+			if s.Attach == nil || *s.Attach {
+				attachTo.Add(s.Name)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
-	attachTo = utils.Remove(attachTo, upOptions.noAttach...)
+	attachTo.RemoveAll(upOptions.noAttach...)
 
 	create := api.CreateOptions{
 		Services:             services,
@@ -198,7 +211,7 @@ func runUp(ctx context.Context, streams api.Streams, backend api.Service, create
 		Start: api.StartOptions{
 			Project:      project,
 			Attach:       consumer,
-			AttachTo:     attachTo,
+			AttachTo:     attachTo.Elements(),
 			ExitCodeFrom: upOptions.exitCodeFrom,
 			CascadeStop:  upOptions.cascadeStop,
 			Wait:         upOptions.wait,
